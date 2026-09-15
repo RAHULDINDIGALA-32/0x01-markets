@@ -50,9 +50,12 @@ const MARKET_ABI = [
   },
 ] as const;
 
+
+type MarketStatus = "OPEN" | "CLOSED" | "RESOLVED" | "SETTLED";
+
 interface Market {
   id: string;
-  status: string;
+  status: MarketStatus;
   qYes: string | bigint;
   qNo: string | bigint;
   collateral: string | bigint;
@@ -91,6 +94,13 @@ const GAS_PRICE_GWEI = BigInt(50);
 const SCALE_GWEI = 1_000_000_000n;
 const SCALE_WEI = 1_000_000_000_000_000_000n;
 
+const statusConfig: Record<MarketStatus, { label: string; variant: "default" | "secondary" | "success" | "warning" }> = {
+  OPEN: { label: "OPEN", variant: "success" },
+  CLOSED: { label: "CLOSED", variant: "warning" },
+  RESOLVED: { label: "RESOLVED", variant: "secondary" },
+  SETTLED: { label: "SETTLED", variant: "default" },
+};
+
 export default function MarketDetailClient({ market }: Props) {
   const { address } = useAccount();
   const queryClient = useQueryClient();
@@ -111,6 +121,7 @@ export default function MarketDetailClient({ market }: Props) {
 
   const marketAddress = market.contractAddress as `0x${string}` || market.id as `0x${string}`;
   const marketInfoQuery = useMarketInfo(marketAddress);
+  const statusInfo = statusConfig[market.status];
 
 
   const tokens = useMemo(() => {
@@ -146,6 +157,8 @@ export default function MarketDetailClient({ market }: Props) {
     timeUntilMarketClose !== null &&
     timeUntilMarketClose > 0 &&
     timeUntilMarketClose <= 60 * 60 * 1000;
+  
+
 
   // A confirmation dialog can remain open while the market reaches its end time.
   // Close it immediately so an expired market cannot be submitted from stale UI.
@@ -154,6 +167,8 @@ export default function MarketDetailClient({ market }: Props) {
     setShowConfirmModal(false);
     setPendingUnsignedQuote(null);
     setPendingSignedQuote(null);
+    market.status = isMarketOpen ? "OPEN" : (market.status != "RESOLVED" && market.status != "SETTLED") ? "CLOSED" : market.status;
+
   }, [isMarketClosed]);
 
   // Get market probabilities with proper hook usage
@@ -616,9 +631,9 @@ export default function MarketDetailClient({ market }: Props) {
                 </Badge>
               )}
             </div>
-            <Badge variant={market.status === "OPEN" ? "success" : "secondary"}>
-              {market.status}
-            </Badge>
+             <Badge variant={statusInfo.variant}>
+                {statusInfo.label}
+              </Badge>
           </div>
         </CardHeader>
         <CardContent>
