@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { motion } from "framer-motion";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,15 +18,17 @@ import {
   OracleMarket,
   OracleMarketStatus,
 } from "@/hooks/useOracleMarkets";
+import { MarketStatus } from "@prisma/client";
 
 interface Props {
   market: OracleMarket;
   onSelect: (market: OracleMarket) => void;
 }
 
-const oracleMarketStatusConfig: Record<OracleMarketStatus, { label: string; variant: "destructive" | "secondary" | "warning" }> = {
+const oracleMarketStatusConfig: Record<OracleMarketStatus, { label: string; variant: "destructive" | "secondary" | "warning" | "default" |"outline" }> = {
   CLOSED: { label: "CLOSED", variant: "warning" },
-  RESOLVED: { label: "RESOLVED", variant: "secondary" },
+  PROPOSED: { label: "PROPOSED", variant: "default" },
+  RESOLVED: { label: "RESOLVED", variant: "outline" },
   DISPUTED: { label: "DISPUTED", variant: "destructive" },
 };
 
@@ -50,9 +51,15 @@ export default function MarketOracleCard({
     ? new Date(endTime *1000).toLocaleDateString()
     : "N/A";
 
+  const oracleStatus = market.oracleStatus
+
   const actionLabel =
-    market.oracleStatus === "CLOSED"
+    oracleStatus === "CLOSED"
       ? "Propose Outcome"
+      : oracleStatus == "PROPOSED" 
+      ? "Dispute Outcome"
+      : oracleStatus == "DISPUTED"
+      ? "Resolve Outcome"
       : "View Oracle Details";
 
   return (

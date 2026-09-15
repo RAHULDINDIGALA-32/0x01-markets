@@ -87,6 +87,7 @@ export default function OracleMarketsClient() {
             <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
               <SelectItem value="CLOSED">Closed</SelectItem>
+              <SelectItem value="PROPOSED">Proposed</SelectItem>
               <SelectItem value="DISPUTED">Disputed</SelectItem>
               <SelectItem value="RESOLVED">Resolved</SelectItem>
             </SelectContent>

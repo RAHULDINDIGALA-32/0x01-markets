@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 
-export type OracleMarketStatus = "CLOSED" | "DISPUTED" | "RESOLVED";
+export type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED";
 
 export interface OracleEvent {
   id: string;

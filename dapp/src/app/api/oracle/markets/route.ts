@@ -15,7 +15,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 
-type OracleMarketStatus = "CLOSED" | "DISPUTED" | "RESOLVED";
+type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED";
 
 export async function GET(request: NextRequest) {
   try {
@@ -131,6 +131,8 @@ export async function GET(request: NextRequest) {
             oracleStatus = "RESOLVED";
           } else if (latestEvent.disputer !== null) {
             oracleStatus = "DISPUTED";
+          } else if (latestEvent.proposer) {
+            oracleStatus = "PROPOSED"
           } else {
             oracleStatus = "CLOSED";
           }
@@ -158,6 +160,7 @@ export async function GET(request: NextRequest) {
     // Valid oracle status filters
     const validOracleStatuses: OracleMarketStatus[] = [
       "CLOSED",
+      "PROPOSED",
       "DISPUTED",
       "RESOLVED",
     ];
