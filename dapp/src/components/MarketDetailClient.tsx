@@ -126,6 +126,35 @@ export default function MarketDetailClient({ market }: Props) {
   // const yesToken = tokens?.yes;
   // const noToken = tokens?.no;
   const endTime = marketInfoQuery.data?.[1];
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+
+  // Keep time-based market state current even when no blockchain query refetches.
+  useEffect(() => {
+    const interval = setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Prefer the on-chain end time, falling back to the market record while it loads.
+  const marketEndTime = endTime ?? market.endTime;
+  const marketEndTimeMs = marketEndTime ? Number(marketEndTime) * 1000 : null;
+  const timeUntilMarketClose = marketEndTimeMs === null ? null : marketEndTimeMs - currentTime;
+  const isMarketClosed = timeUntilMarketClose !== null && timeUntilMarketClose <= 0;
+  const isMarketOpen = market.status === "OPEN" && !isMarketClosed;
+  const isMarketExpiredNow = () => marketEndTimeMs !== null && Date.now() >= marketEndTimeMs;
+  const isMarketClosingSoon =
+    isMarketOpen &&
+    timeUntilMarketClose !== null &&
+    timeUntilMarketClose > 0 &&
+    timeUntilMarketClose <= 60 * 60 * 1000;
+
+  // A confirmation dialog can remain open while the market reaches its end time.
+  // Close it immediately so an expired market cannot be submitted from stale UI.
+  useEffect(() => {
+    if (!isMarketClosed) return;
+    setShowConfirmModal(false);
+    setPendingUnsignedQuote(null);
+    setPendingSignedQuote(null);
+  }, [isMarketClosed]);
 
   // Get market probabilities with proper hook usage
   const hasTokens = !!tokens?.yes && !!tokens?.no;
@@ -168,7 +197,7 @@ export default function MarketDetailClient({ market }: Props) {
   }, [probabilities, market.qYes, market.qNo]);
 
   // Request unsigned quote only when amount > 0
-  const quoteRequest = address && amount && Number(amount) > 0
+  const quoteRequest = isMarketOpen && address && amount && Number(amount) > 0
     ? {
       marketId: market.id,
       trader: address,
@@ -182,12 +211,12 @@ export default function MarketDetailClient({ market }: Props) {
 
   // Auto-refresh quote every 10 seconds
   useEffect(() => {
-    if (!unsignedQuote || isExpired) return;
+    if (!unsignedQuote || isExpired || isMarketClosed) return;
     const interval = setInterval(() => {
       refetch();
     }, 10000);
     return () => clearInterval(interval);
-  }, [unsignedQuote, isExpired, refetch]);
+  }, [unsignedQuote, isExpired, isMarketClosed, refetch]);
 
   const { writeContractAsync, isPending: isWriting } = useWriteContract();
   const { isSuccess, isError, data: txReceipt } = useWaitForTransactionReceipt({
@@ -435,24 +464,26 @@ export default function MarketDetailClient({ market }: Props) {
   const isAmountExceedsEthBalance = !isSell && unsignedQuote && BigInt(unsignedQuote.quote.cost) > ethBalance;
 
   const handleMaxClick = () => {
+    if (!isMarketOpen) return;
     const maxAmount = calculateMaxAmount();
     setAmount(maxAmount);
   };
 
   const handleAmountChange = (value: string) => {
+    if (!isMarketOpen) return;
     if (value === "" || /^\d*\.?\d*$/.test(value)) {
       setAmount(value);
     }
   };
 
   const handleTradeClick = async () => {
-    if (!unsignedQuote || !address) return;
+    if (!isMarketOpen || isMarketExpiredNow() || !unsignedQuote || !address) return;
     setPendingUnsignedQuote(unsignedQuote);
     setShowConfirmModal(true);
   };
 
   const executeTrade = async () => {
-    if (!pendingUnsignedQuote || !address) return;
+    if (!isMarketOpen || isMarketExpiredNow() || !pendingUnsignedQuote || !address) return;
 
     try {
       setIsSigningQuote(true);
@@ -565,9 +596,6 @@ export default function MarketDetailClient({ market }: Props) {
   const impliedProbability = unsignedQuote && unsignedQuote.quote
     ? Number(unsignedQuote.quote.cost) / (Number(unsignedQuote.quote.amount) + Number(unsignedQuote.quote.cost))
     : displayProbs.yes;
-
-  const isMarketOpen = market.status === "OPEN";
-  const isMarketClosingSoon = endTime ? Number(endTime) * 1000 - Date.now() < 3600000 : false;
 
   return (
     <div className="space-y-6">
@@ -714,8 +742,12 @@ export default function MarketDetailClient({ market }: Props) {
               </div>
             )}
 
-            {/* Side Toggle */}
-            <div className="grid grid-cols-2 gap-2">
+            <div
+              className={isMarketClosed ? "space-y-4 opacity-50" : "space-y-4"}
+              aria-disabled={isMarketClosed}
+            >
+              {/* Side Toggle */}
+              <div className="grid grid-cols-2 gap-2">
               <Button
                 variant={side === "YES" ? "default" : "outline"}
                 onClick={() => setSide("YES")}
@@ -730,10 +762,10 @@ export default function MarketDetailClient({ market }: Props) {
               >
                 NO
               </Button>
-            </div>
+              </div>
 
-            {/* Buy/Sell Toggle */}
-            <div className="flex items-center gap-2">
+              {/* Buy/Sell Toggle */}
+              <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 id="isSell"
@@ -742,13 +774,13 @@ export default function MarketDetailClient({ market }: Props) {
                 disabled={!isMarketOpen}
                 className="h-4 w-4 rounded border-zinc-300"
               />
-              <Label htmlFor="isSell" className="cursor-pointer text-sm">
+              <Label htmlFor="isSell" className={isMarketClosed ? "cursor-not-allowed text-sm" : "cursor-pointer text-sm"}>
                 Sell {side} tokens
               </Label>
-            </div>
+              </div>
 
-            {/* Amount Input */}
-            <div>
+              {/* Amount Input */}
+              <div>
               <Label htmlFor="amount" className="text-sm">
                 Amount ({side === "YES" ? "YES" : "NO"} tokens)
               </Label>
@@ -777,6 +809,7 @@ export default function MarketDetailClient({ market }: Props) {
                   Available: {formatUnits(selectedBalance, 18)} {side} tokens
                 </div>
               )}
+              </div>
             </div>
 
             {/* Validation Errors */}
@@ -794,7 +827,7 @@ export default function MarketDetailClient({ market }: Props) {
             )}
 
             {/* Quote Preview */}
-            {unsignedQuote && !isExpired && !isAmountExceedsSellBalance && !isAmountExceedsEthBalance && (
+            {unsignedQuote && !isMarketClosed && !isExpired && !isAmountExceedsSellBalance && !isAmountExceedsEthBalance && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -834,10 +867,16 @@ export default function MarketDetailClient({ market }: Props) {
             )}
 
             {/* Warnings */}
-            {isExpired && !isAmountExceedsSellBalance && (
+            {isExpired && !isMarketClosed && !isAmountExceedsSellBalance && (
               <div className="flex items-center gap-2 rounded-lg bg-yellow-50 border border-yellow-200 p-3 text-sm text-yellow-800 dark:bg-yellow-900/20 dark:border-yellow-800 dark:text-yellow-200">
                 <AlertTriangle className="h-4 w-4" />
                 Quote expired. Please adjust amount to refresh.
+              </div>
+            )}
+            {isMarketClosed && (
+              <div className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-800 dark:bg-red-900/20 dark:border-red-800 dark:text-red-200">
+                <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                Market closed. Trading is no longer available.
               </div>
             )}
             {isMarketClosingSoon && (
@@ -939,7 +978,9 @@ export default function MarketDetailClient({ market }: Props) {
             >
               {quoteLoading
                 ? "Getting quote..."
-                : isExpired
+                : isMarketClosed
+                  ? "Market Closed"
+                  : isExpired
                   ? "Quote Expired"
                   : !unsignedQuote
                     ? "Enter amount"
