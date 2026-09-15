@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import {
@@ -21,15 +20,13 @@ import {
   AlertTriangle,
   Loader,
   ExternalLink,
-  X
 } from "lucide-react";
 import {
   calculateProbability,
   formatEth,
-  formatTimeRemaining,
   formatAddress,
 } from "@/lib/utils";
-import { getOracleConfig, weiToEth, formatSeconds } from "@/lib/oracleConfig";
+import { getOracleConfig, formatSeconds } from "@/lib/oracleConfig";
 import { syncOracleToDatabase } from "@/lib/blockchainUtils";
 import { OracleMarket } from "@/hooks/useOracleMarkets";
 
@@ -81,33 +78,24 @@ interface Props {
   userAddress?: `0x${string}`;
 }
 
-function parseEthToWei(value: string): bigint {
-  if (!value || !value.trim()) return 0n;
-  try {
-    const [whole = "0", fraction = "0"] = value.split(".");
-    const fracPadded = (fraction + "000000000000000000").slice(0, 18);
-    return BigInt(whole) * 10n ** 18n + BigInt(fracPadded);
-  } catch {
-    return 0n;
-  }
-}
-
 export default function OracleMarketDetailModal({
   market,
   onClose,
   userAddress,
 }: Props) {
   const config = getOracleConfig();
+  const proposerBondWei = BigInt(config.proposerBondWei);
+  const disputerBondWei = BigInt(config.disputerBondWei);
+  const proposerBountyWei = BigInt(config.proposerBountyWei);
   const { writeContractAsync, isPending } = useWriteContract();
   const [selectedOutcome, setSelectedOutcome] = useState<"YES" | "NO">("YES");
-  const [bondAmount, setBondAmount] = useState(weiToEth(config.proposerBondWei));
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<"idle" | "pending" | "success" | "error">("idle");
   const [txError, setTxError] = useState<string | null>(null);
   //const [isResolving, setIsResolving] = useState(false);
   const [resolveDecision, setResolveDecision] = useState<"correct" | "incorrect">("correct");
 
-  const { isLoading: isConfirming } = useWaitForTransactionReceipt({
+  const { isLoading: isConfirming, isSuccess: isConfirmed, isError: isConfirmationError } = useWaitForTransactionReceipt({
     hash: txHash as `0x${string}` | undefined,
   });
 
@@ -115,9 +103,9 @@ export default function OracleMarketDetailModal({
   const yesPercent = (probabilities.yes * 100).toFixed(1);
   const noPercent = (probabilities.no * 100).toFixed(1);
   
-  const timeRemaining = market.endTime
-    ? formatTimeRemaining(Number(market.endTime) * 1000)
-    : "Unknown";
+  const endDate = market.endTime
+    ? new Date(Number(market.endTime) * 1000).toLocaleString()
+    : "N/A";
 
   // Determine if user is the proposer
   // const isProposer =
@@ -134,15 +122,18 @@ export default function OracleMarketDetailModal({
     setTxError(null);
   }, [market.id]);
 
+  useEffect(() => {
+    if (isConfirmed) setTxStatus("success");
+    if (isConfirmationError) {
+      setTxStatus("error");
+      setTxError("Transaction was not confirmed. Please check your wallet and try again.");
+    }
+  }, [isConfirmed, isConfirmationError]);
+
   const handleProposeOutcome = async () => {
     try {
       setTxError(null);
       setTxStatus("pending");
-
-      const value = parseEthToWei(bondAmount);
-      if (value === 0n) {
-        throw new Error("Invalid bond amount");
-      }
 
       const hash = await writeContractAsync({
         address: ORACLE_ADDRESS,
@@ -152,11 +143,10 @@ export default function OracleMarketDetailModal({
           market.contractAddress as `0x${string}`,
           selectedOutcome === "YES" ? 1 : 0,
         ],
-        value,
+        value: proposerBondWei,
       });
 
       setTxHash(hash);
-      setTxStatus("success");
 
       // ISSUE #1 RESOLUTION: Sync oracle proposal to database
       console.log(`[ORACLE MODAL] Syncing proposal for market ${market.id}`);
@@ -251,7 +241,6 @@ export default function OracleMarketDetailModal({
       });
 
       setTxHash(hash);
-      setTxStatus("success");
 
       // ISSUE #3 RESOLUTION: Sync oracle resolution to database
       console.log(`[ORACLE MODAL] Syncing resolution for market ${market.id}`);
@@ -353,22 +342,12 @@ export default function OracleMarketDetailModal({
               </div>
 
               <div>
-                <Label htmlFor="bond-amount" className="text-xs">
-                  Proposer Bond (ETH)
-                </Label>
-                <Input
-                  id="bond-amount"
-                  type="number"
-                  step="0.01"
-                  value={bondAmount}
-                  onChange={(e) => setBondAmount(e.target.value)}
-                  disabled={isPending || isConfirming}
-                  className="mt-1 text-sm"
-                  placeholder={weiToEth(config.proposerBondWei)}
-                />
-                <p className="mt-1 text-xs text-zinc-500">
-                  Required: {weiToEth(config.proposerBondWei)} ETH
-                </p>
+                <Label className="text-xs">Proposer Bond</Label>
+                <div className="mt-1 flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+                  <span className="font-mono font-semibold">{formatEth(proposerBondWei, 4)}</span>
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">Fixed by oracle</span>
+                </div>
+                <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">This bond is set by the oracle contract and is returned if the proposal is upheld.</p>
               </div>
 
               <Button
@@ -486,27 +465,19 @@ export default function OracleMarketDetailModal({
 
   return (
     <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <div className="flex items-start justify-between w-full">
-            <div className="flex-1">
+      <DialogContent className="max-h-[90vh] max-w-3xl gap-0 overflow-hidden p-0">
+        <DialogHeader className="border-b border-zinc-200 px-6 py-5 pr-12 dark:border-zinc-800">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
               <DialogTitle className="text-lg">{market.title || market.id}</DialogTitle>
-              <DialogDescription className="text-xs mt-1">
+              <DialogDescription className="mt-1 line-clamp-2 text-sm">
                 {market.description}
               </DialogDescription>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onClose}
-              className="h-6 w-6"
-            >
-              <X className="h-4 w-4" />
-            </Button>
           </div>
         </DialogHeader>
 
-        <div className="space-y-6 mt-4">
+        <div className="max-h-[calc(90vh-101px)] space-y-5 overflow-y-auto overscroll-contain px-6 py-5 [scrollbar-width:thin] [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-300 dark:[&::-webkit-scrollbar-thumb]:bg-zinc-700 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-1.5">
           {/* Market Details */}
           <Card>
             <CardHeader className="pb-3">
@@ -527,12 +498,12 @@ export default function OracleMarketDetailModal({
                 <div>
                   <Label className="text-xs text-zinc-500">Total Volume</Label>
                   <p className="text-sm font-medium mt-1">
-                    {formatEth(market.collateral, 2)} ETH
+                    {formatEth(BigInt(market.collateral), 4)}
                   </p>
                 </div>
                 <div>
-                  <Label className="text-xs text-zinc-500">Time Remaining</Label>
-                  <p className="text-sm font-medium mt-1">{timeRemaining}</p>
+                  <Label className="text-xs text-zinc-500">Closed On</Label>
+                  <p className="text-sm font-medium mt-1">{endDate}</p>
                 </div>
                 {market.resolutionSource && (
                   <div className="col-span-2">
@@ -548,7 +519,7 @@ export default function OracleMarketDetailModal({
 
               {/* Probability Visualization */}
               <div className="pt-2 border-t">
-                <Label className="text-xs text-zinc-500">Market Probabilities</Label>
+                <Label className="text-xs text-zinc-500">Final Market Probabilities</Label>
                 <div className="mt-2 space-y-2">
                   <div>
                     <div className="flex justify-between mb-1">
@@ -711,13 +682,13 @@ export default function OracleMarketDetailModal({
                 <div>
                   <Label className="text-xs text-zinc-500">Proposer Bond</Label>
                   <p className="text-sm font-semibold mt-1 font-mono">
-                    {weiToEth(config.proposerBondWei)} ETH
+                    {formatEth(proposerBondWei, 4)}
                   </p>
                 </div>
                 <div>
                   <Label className="text-xs text-zinc-500">Disputer Bond</Label>
                   <p className="text-sm font-semibold mt-1 font-mono">
-                    {weiToEth(config.disputerBondWei)} ETH
+                    {formatEth(disputerBondWei, 4)}
                   </p>
                 </div>
                 <div>
@@ -735,14 +706,14 @@ export default function OracleMarketDetailModal({
                 <div>
                   <Label className="text-xs text-zinc-500">Proposer Bounty</Label>
                   <p className="text-sm font-semibold mt-1 font-mono">
-                    {weiToEth(config.proposerBountyWei)} ETH
+                    {formatEth(proposerBountyWei, 4)}
                   </p>
                 </div>
               </div>
             </CardContent>
           </Card>
 
-          <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 flex items-start gap-3">
+          <div className="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 flex items-start gap-3 mb-10">
             <AlertTriangle className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
             <div>
               <h4 className="font-semibold text-sm text-amber-900 dark:text-amber-100">
