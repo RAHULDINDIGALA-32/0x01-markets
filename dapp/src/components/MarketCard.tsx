@@ -41,19 +41,21 @@ export default function MarketCard({ market }: Props) {
   const probabilities = calculateProbability(market.qYes, market.qNo);
   const statusInfo = statusConfig[market.status];
    const [currentTime, setCurrentTime] = useState(() => Date.now());
-  
-  // Keep time-based market state current even when no blockchain query refetches.
-  useEffect(() => {
-      const interval = setInterval(() => setCurrentTime(Date.now()), 1_000);
-      market.status = isMarketOpen ? "OPEN" : (market.status != "RESOLVED" && market.status != "SETTLED") ? "CLOSED" : market.status;
-      return () => clearInterval(interval);
-    }, []);
 
   const marketEndTime = market ? market.endTime : null;
   const marketEndTimeMs = marketEndTime ? Number(marketEndTime) * 1000 : null;
   const timeUntilMarketClose = marketEndTimeMs === null ? null : marketEndTimeMs - currentTime;
   const isMarketClosed = timeUntilMarketClose !== null && timeUntilMarketClose <= 0;
   const isMarketOpen = market.status === "OPEN" && !isMarketClosed;
+  
+  // Keep time-based market state current even when no blockchain query refetches.
+  useEffect(() => {
+      const interval = setInterval(() => setCurrentTime(Date.now()), 1_000);
+      market.status = isMarketOpen ? "OPEN" : (market.status != "RESOLVED" && market.status != "SETTLED") ? "CLOSED" : market.status;
+      return () => clearInterval(interval);
+    }, [isMarketOpen, market]);
+
+  
 
   useEffect(() => {
 

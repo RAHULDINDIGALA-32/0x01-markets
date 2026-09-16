@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { Github, ExternalLink, Zap } from "lucide-react";
+import { Github, ExternalLink } from "lucide-react";
 
 type FooterLink = {
   label: string;

@@ -4,7 +4,7 @@ import "@rainbow-me/rainbowkit/styles.css";
 import {
   getDefaultConfig,
   RainbowKitProvider,
-  lightTheme,
+  //lightTheme,
   darkTheme
 } from "@rainbow-me/rainbowkit";
 import { WagmiProvider, http } from "wagmi";

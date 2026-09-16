@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useAccount } from "wagmi";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
@@ -109,12 +109,11 @@ export default function MarketDetailClient({ market }: Props) {
   const [isSell, setIsSell] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [pendingUnsignedQuote, setPendingUnsignedQuote] = useState<UnsignedQuote | null>(null);
-  const [pendingSignedQuote, setPendingSignedQuote] = useState<SignedQuote | null>(null);
+  //const [pendingSignedQuote, setPendingSignedQuote] = useState<SignedQuote | null>(null);
   const [signingError, setSigningError] = useState<string | null>(null);
   const [isSigningQuote, setIsSigningQuote] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<"pending" | "confirmed" | "failed" | null>(null);
-  const [txBlockNumber, setTxBlockNumber] = useState<number | null>(null);
   const [isRecordingTrade, setIsRecordingTrade] = useState(false);
   const [recordingAttemptTxHash, setRecordingAttemptTxHash] = useState<string | null>(null);
   const pendingTradeExecutionRef = useRef<PendingTradeExecution | null>(null);
@@ -166,10 +165,10 @@ export default function MarketDetailClient({ market }: Props) {
     if (!isMarketClosed) return;
     setShowConfirmModal(false);
     setPendingUnsignedQuote(null);
-    setPendingSignedQuote(null);
+    //setPendingSignedQuote(null);
     market.status = isMarketOpen ? "OPEN" : (market.status != "RESOLVED" && market.status != "SETTLED") ? "CLOSED" : market.status;
 
-  }, [isMarketClosed]);
+  }, [isMarketClosed, isMarketOpen, market]);
 
   // Get market probabilities with proper hook usage
   const hasTokens = !!tokens?.yes && !!tokens?.no;
@@ -233,26 +232,45 @@ export default function MarketDetailClient({ market }: Props) {
     return () => clearInterval(interval);
   }, [unsignedQuote, isExpired, isMarketClosed, refetch]);
 
+  // Invalidate React Query cache and refetch data
+  const invalidateAndRefreshData = useCallback(async () => {
+    try {
+      await queryClient.invalidateQueries({ queryKey: ["portfolio", address] });
+      await queryClient.invalidateQueries({ queryKey: ["portfolio-stats", address] });
+
+      await Promise.all([
+        marketInfoQuery.refetch(),
+        probabilitiesQuery.refetch(),
+        positionsQuery.refetch(),
+        refetchEthBalance(),
+      ]);
+
+
+      await queryClient.invalidateQueries({
+        predicate: (query) =>
+          Array.isArray(query.queryKey) &&
+          query.queryKey.some(
+            (k) =>
+              typeof k === "object" &&
+              k !== null &&
+              "functionName" in k &&
+              (k.functionName === "balanceOf" || k.functionName === "totalSupply")
+          ),
+      });
+
+    } catch (error) {
+      console.error("Error refreshing data:", error);
+    }
+  }, [address, marketInfoQuery, positionsQuery, probabilitiesQuery, queryClient, refetchEthBalance]);
+
   const { writeContractAsync, isPending: isWriting } = useWriteContract();
   const { isSuccess, isError, data: txReceipt } = useWaitForTransactionReceipt({
     hash: txHash as `0x${string}` | undefined,
   });
 
-  // Handle transaction confirmation and record trade to database
-  useEffect(() => {
-    if (isSuccess && txReceipt && !isRecordingTrade && recordingAttemptTxHash !== txReceipt.transactionHash) {
-      setRecordingAttemptTxHash(txReceipt.transactionHash);
-      setTxStatus("confirmed");
-      const blockNumber = Number(txReceipt.blockNumber);
-      setTxBlockNumber(blockNumber);
-      recordTradeToDatabase(blockNumber);
-    } else if (isError) {
-      setTxStatus("failed");
-    }
-  }, [isSuccess, isError, txReceipt, isRecordingTrade, recordingAttemptTxHash]);
-
+  
   // Record trade to database after on-chain confirmation
-  const recordTradeToDatabase = async (blockNumber: number) => {
+  const recordTradeToDatabase = useCallback(async (blockNumber: number) => {
     const pendingTradeExecution = pendingTradeExecutionRef.current;
 
     if (!pendingTradeExecution || blockNumber === null) {
@@ -391,12 +409,11 @@ export default function MarketDetailClient({ market }: Props) {
         setShowConfirmModal(false);
         setAmount("");
         setPendingUnsignedQuote(null);
-        setPendingSignedQuote(null);
+        //setPendingSignedQuote(null);
         pendingTradeExecutionRef.current = null;
         setRecordingAttemptTxHash(null);
         setTxHash(null);
         setTxStatus(null);
-        setTxBlockNumber(null);
       }, 2000);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -410,38 +427,19 @@ export default function MarketDetailClient({ market }: Props) {
     } finally {
       setIsRecordingTrade(false);
     }
-  };
+  }, [invalidateAndRefreshData, market, queryClient]);
 
-  // Invalidate React Query cache and refetch data
-  const invalidateAndRefreshData = async () => {
-    try {
-      await queryClient.invalidateQueries({ queryKey: ["portfolio", address] });
-      await queryClient.invalidateQueries({ queryKey: ["portfolio-stats", address] });
-
-      await Promise.all([
-        marketInfoQuery.refetch(),
-        probabilitiesQuery.refetch(),
-        positionsQuery.refetch(),
-        refetchEthBalance(),
-      ]);
-
-
-      await queryClient.invalidateQueries({
-        predicate: (query) =>
-          Array.isArray(query.queryKey) &&
-          query.queryKey.some(
-            (k) =>
-              typeof k === "object" &&
-              k !== null &&
-              "functionName" in k &&
-              (k.functionName === "balanceOf" || k.functionName === "totalSupply")
-          ),
-      });
-
-    } catch (error) {
-      console.error("Error refreshing data:", error);
+  // Handle transaction confirmation and record trade to database
+  useEffect(() => {
+    if (isSuccess && txReceipt && !isRecordingTrade && recordingAttemptTxHash !== txReceipt.transactionHash) {
+      setRecordingAttemptTxHash(txReceipt.transactionHash);
+      setTxStatus("confirmed");
+      const blockNumber = Number(txReceipt.blockNumber);
+      recordTradeToDatabase(blockNumber);
+    } else if (isError) {
+      setTxStatus("failed");
     }
-  };
+  }, [isSuccess, isError, txReceipt, isRecordingTrade, recordingAttemptTxHash, recordTradeToDatabase]);
 
   // Calculate max buyable / sellable
   const calculateMaxAmount = (): string => {
@@ -508,7 +506,7 @@ export default function MarketDetailClient({ market }: Props) {
       setRecordingAttemptTxHash(null);
 
       const signedQuote = await signQuote(pendingUnsignedQuote, market.id);
-      setPendingSignedQuote(signedQuote);
+      //setPendingSignedQuote(signedQuote);
 
       const quoteStruct = {
         trader: signedQuote.quote.trader as `0x${string}`,
@@ -1071,7 +1069,7 @@ export default function MarketDetailClient({ market }: Props) {
           onCancel={() => {
             setShowConfirmModal(false);
             setPendingUnsignedQuote(null);
-            setPendingSignedQuote(null);
+            //setPendingSignedQuote(null);
             setSigningError(null);
           }}
           isPending={isSigningQuote || isWriting}
