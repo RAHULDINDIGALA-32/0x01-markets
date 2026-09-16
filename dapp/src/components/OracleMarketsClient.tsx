@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useCallback, useState, useMemo } from "react";
 import { AnimatePresence } from "framer-motion";
 import { useAccount } from "wagmi";
 import { Search, Loader2 } from "lucide-react";
@@ -28,7 +28,7 @@ export default function OracleMarketsClient() {
   );
 
   // Fetch markets
-  const { markets, isLoading, error } = useOracleMarkets(
+  const { markets, isLoading, error, refetch } = useOracleMarkets(
     oracleStatusFilter === "all" ? undefined : oracleStatusFilter,
     categoryFilter === "all" ? undefined : categoryFilter,
     searchQuery || undefined
@@ -46,6 +46,19 @@ export default function OracleMarketsClient() {
       );
     });
   }, [markets, searchQuery]);
+
+  const refreshAfterOracleAction = useCallback(async () => {
+    await refetch();
+    if (!selectedMarket) return;
+
+    // Fetch unfiltered data too: the action can move this market out of the
+    // currently selected status filter while its modal remains open.
+    const response = await fetch("/api/oracle/markets");
+    if (!response.ok) return;
+    const refreshedMarkets = (await response.json()) as OracleMarket[];
+    const refreshedMarket = refreshedMarkets.find((market) => market.id === selectedMarket.id);
+    if (refreshedMarket) setSelectedMarket(refreshedMarket);
+  }, [refetch, selectedMarket]);
 
   if (error) {
     return (
@@ -90,6 +103,7 @@ export default function OracleMarketsClient() {
               <SelectItem value="PROPOSED">Proposed</SelectItem>
               <SelectItem value="DISPUTED">Disputed</SelectItem>
               <SelectItem value="RESOLVED">Resolved</SelectItem>
+              <SelectItem value="FINALIZED">Finalized</SelectItem>
             </SelectContent>
           </Select>
 
@@ -146,6 +160,7 @@ export default function OracleMarketsClient() {
             market={selectedMarket}
             onClose={() => setSelectedMarket(null)}
             userAddress={address}
+            onMarketUpdated={refreshAfterOracleAction}
           />
         )}
       </AnimatePresence>

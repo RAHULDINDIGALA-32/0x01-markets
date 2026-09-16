@@ -76,12 +76,14 @@ interface Props {
   market: OracleMarket;
   onClose: () => void;
   userAddress?: `0x${string}`;
+  onMarketUpdated: () => Promise<void>;
 }
 
 export default function OracleMarketDetailModal({
   market,
   onClose,
   userAddress,
+  onMarketUpdated,
 }: Props) {
   const config = getOracleConfig();
   const proposerBondWei = BigInt(config.proposerBondWei);
@@ -94,6 +96,8 @@ export default function OracleMarketDetailModal({
   const [txError, setTxError] = useState<string | null>(null);
   //const [isResolving, setIsResolving] = useState(false);
   const [resolveDecision, setResolveDecision] = useState<"correct" | "incorrect">("correct");
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const [isResolver, setIsResolver] = useState<boolean | null>(null);
 
   const { isLoading: isConfirming, isSuccess: isConfirmed, isError: isConfirmationError } = useWaitForTransactionReceipt({
     hash: txHash as `0x${string}` | undefined,
@@ -102,10 +106,26 @@ export default function OracleMarketDetailModal({
   const probabilities = calculateProbability(market.qYes, market.qNo);
   const yesPercent = (probabilities.yes * 100).toFixed(1);
   const noPercent = (probabilities.no * 100).toFixed(1);
-  
+
   const endDate = market.endTime
     ? new Date(Number(market.endTime) * 1000).toLocaleString()
     : "N/A";
+  const proposalTime = market.latestOracleEvent ? new Date(market.latestOracleEvent.createdAt).getTime() : null;
+  const disputeEndsAt = proposalTime === null ? null : proposalTime + config.disputeWindowSeconds * 1000;
+  const resolutionEndsAt = disputeEndsAt === null ? null : disputeEndsAt + config.resolutionDeadlineSeconds * 1000;
+  const disputeTimeLeft = disputeEndsAt === null ? 0 : Math.max(0, disputeEndsAt - currentTime);
+  const resolutionTimeLeft = resolutionEndsAt === null ? 0 : Math.max(0, resolutionEndsAt - currentTime);
+  const isDisputeWindowOpen = disputeEndsAt !== null && disputeTimeLeft > 0;
+  const isResolutionWindowOpen = resolutionEndsAt !== null && resolutionTimeLeft > 0;
+  const formatCountdown = (milliseconds: number) => {
+    if (milliseconds <= 0) return "Closed";
+    const totalSeconds = Math.ceil(milliseconds / 1000);
+    const days = Math.floor(totalSeconds / 86_400);
+    const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const seconds = totalSeconds % 60;
+    return days > 0 ? `${days}d ${hours}h remaining` : `${hours}h ${minutes}m ${seconds}s remaining`;
+  };
 
   // Determine if user is the proposer
   // const isProposer =
@@ -123,12 +143,43 @@ export default function OracleMarketDetailModal({
   }, [market.id]);
 
   useEffect(() => {
+    const interval = setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!userAddress) {
+      setIsResolver(false);
+      return;
+    }
+    let active = true;
+    void fetch(`/api/admin/auth-check?address=${userAddress}&type=resolver`)
+      .then(async (response) => response.ok ? response.json() : { isAuthorized: false })
+      .then((result) => { if (active) setIsResolver(result.isAuthorized === true); })
+      .catch(() => { if (active) setIsResolver(false); });
+    return () => { active = false; };
+  }, [userAddress]);
+
+  useEffect(() => {
     if (isConfirmed) setTxStatus("success");
     if (isConfirmationError) {
       setTxStatus("error");
       setTxError("Transaction was not confirmed. Please check your wallet and try again.");
     }
   }, [isConfirmed, isConfirmationError]);
+
+  const syncAndRefresh = async (
+    action: "propose" | "dispute" | "resolve" | "finalize",
+    hash: `0x${string}`,
+    data: Record<string, unknown>
+  ) => {
+    const syncSuccess = await syncOracleToDatabase(action, market.id, hash, data);
+    if (!syncSuccess) {
+      setTxError("Transaction confirmed, but its activity record could not be refreshed yet.");
+      return;
+    }
+    await onMarketUpdated();
+  };
 
   const handleProposeOutcome = async () => {
     try {
@@ -148,81 +199,36 @@ export default function OracleMarketDetailModal({
 
       setTxHash(hash);
 
-      // ISSUE #1 RESOLUTION: Sync oracle proposal to database
-      console.log(`[ORACLE MODAL] Syncing proposal for market ${market.id}`);
-      const syncSuccess = await syncOracleToDatabase(
-        "propose",
-        market.id,
-        hash as `0x${string}`,
-        {
-          proposer: userAddress,
-          proposedOutcome: selectedOutcome,
-        }
-      );
-
-      if (!syncSuccess) {
-        console.error(
-          "[ORACLE MODAL] Proposal syncing failed - database may be out of sync"
-        );
-        setTxError(
-          "Proposal confirmed but database sync failed. Please refresh the page."
-        );
-      }
+      await syncAndRefresh("propose", hash, { proposer: userAddress, proposedOutcome: selectedOutcome });
     } catch (err: unknown) {
       setTxStatus("error");
       const errorMessage = err instanceof Error ? err.message : "Failed to propose outcome";
       setTxError(errorMessage);
-      console.error("Propose error:", err);
     }
   };
 
-  // const handleDisputeOutcome = async () => {
-  //   try {
-  //     setTxError(null);
-  //     setTxStatus("pending");
+  const handleDisputeOutcome = async () => {
+    try {
+      setTxError(null);
+      setTxStatus("pending");
 
-  //     const value = parseEthToWei(bondAmount);
-  //     if (value === 0n) {
-  //       throw new Error("Invalid bond amount");
-  //     }
+      const hash = await writeContractAsync({
+        address: ORACLE_ADDRESS,
+        abi: ORACLE_ABI,
+        functionName: "disputeOutcome",
+        args: [market.contractAddress as `0x${string}`],
+        value: disputerBondWei,
+      });
 
-  //     const hash = await writeContractAsync({
-  //       address: ORACLE_ADDRESS,
-  //       abi: ORACLE_ABI,
-  //       functionName: "disputeOutcome",
-  //       args: [market.contractAddress as `0x${string}`],
-  //       value,
-  //     });
-
-  //     setTxHash(hash);
-  //     setTxStatus("success");
-
-  //     // ISSUE #2 RESOLUTION: Sync oracle dispute to database
-  //     console.log(`[ORACLE MODAL] Syncing dispute for market ${market.id}`);
-  //     const syncSuccess = await syncOracleToDatabase(
-  //       "dispute",
-  //       market.id,
-  //       hash as `0x${string}`,
-  //       {
-  //         disputer: userAddress,
-  //       }
-  //     );
-
-  //     if (!syncSuccess) {
-  //       console.error(
-  //         "[ORACLE MODAL] Dispute syncing failed - database may be out of sync"
-  //       );
-  //       setTxError(
-  //         "Dispute confirmed but database sync failed. Please refresh the page."
-  //       );
-  //     }
-  //   } catch (err: unknown) {
-  //     setTxStatus("error");
-  //     const errorMessage = err instanceof Error ? err.message : "Failed to dispute outcome";
-  //     setTxError(errorMessage);
-  //     console.error("Dispute error:", err);
-  //   }
-  // };
+      setTxHash(hash);
+      await syncAndRefresh("dispute", hash, { disputer: userAddress });
+    } catch (err: unknown) {
+      setTxStatus("error");
+      const errorMessage = err instanceof Error ? err.message : "Failed to dispute outcome";
+      setTxError(errorMessage);
+      console.error("Dispute error:", err);
+    }
+  };
 
   const handleResolveOutcome = async () => {
     try {
@@ -242,25 +248,7 @@ export default function OracleMarketDetailModal({
 
       setTxHash(hash);
 
-      // ISSUE #3 RESOLUTION: Sync oracle resolution to database
-      console.log(`[ORACLE MODAL] Syncing resolution for market ${market.id}`);
-      const syncSuccess = await syncOracleToDatabase(
-        "resolve",
-        market.id,
-        hash as `0x${string}`,
-        {
-          finalOutcome: selectedOutcome,
-        }
-      );
-
-      if (!syncSuccess) {
-        console.error(
-          "[ORACLE MODAL] Resolution syncing failed - database may be out of sync"
-        );
-        setTxError(
-          "Resolution confirmed but database sync failed. Please refresh the page."
-        );
-      }
+      await syncAndRefresh("resolve", hash, { finalOutcome: selectedOutcome });
     } catch (err: unknown) {
       setTxStatus("error");
       const errorMessage = err instanceof Error ? err.message : "Failed to resolve outcome";
@@ -269,49 +257,27 @@ export default function OracleMarketDetailModal({
     }
   };
 
-  // const handleFinalizeOutcome = async () => {
-  //   try {
-  //     setTxError(null);
-  //     setTxStatus("pending");
+  const handleFinalizeOutcome = async () => {
+    try {
+      setTxError(null);
+      setTxStatus("pending");
 
-  //     const hash = await writeContractAsync({
-  //       address: ORACLE_ADDRESS,
-  //       abi: ORACLE_ABI,
-  //       functionName: "finalizeUndisputedOutcome",
-  //       args: [market.contractAddress as `0x${string}`],
-  //     });
+      const hash = await writeContractAsync({
+        address: ORACLE_ADDRESS,
+        abi: ORACLE_ABI,
+        functionName: "finalizeUndisputedOutcome",
+        args: [market.contractAddress as `0x${string}`],
+      });
 
-  //     setTxHash(hash);
-  //     setTxStatus("success");
-
-    
-  //     console.log(
-  //       `[ORACLE MODAL] Syncing finalization for market ${market.id}`
-  //     );
-  //     const syncSuccess = await syncOracleToDatabase(
-  //       "finalize",
-  //       market.id,
-  //       hash as `0x${string}`,
-  //       {
-  //         finalOutcome: market.latestOracleEvent?.proposed || "YES",
-  //       }
-  //     );
-
-  //     if (!syncSuccess) {
-  //       console.error(
-  //         "[ORACLE MODAL] Finalization syncing failed - database may be out of sync"
-  //       );
-  //       setTxError(
-  //         "Finalization confirmed but database sync failed. Please refresh the page."
-  //       );
-  //     }
-  //   } catch (err: unknown) {
-  //     setTxStatus("error");
-  //     const errorMessage = err instanceof Error ? err.message : "Failed to finalize outcome";
-  //     setTxError(errorMessage);
-  //     console.error("Finalize error:", err);
-  //   }
-  // };
+      setTxHash(hash);
+      await syncAndRefresh("finalize", hash, { finalOutcome: market.latestOracleEvent?.proposed || "YES" });
+    } catch (err: unknown) {
+      setTxStatus("error");
+      const errorMessage = err instanceof Error ? err.message : "Failed to finalize outcome";
+      setTxError(errorMessage);
+      console.error("Finalize error:", err);
+    }
+  };
 
   const renderOracleActions = () => {
     switch (market.oracleStatus) {
@@ -368,95 +334,45 @@ export default function OracleMarketDetailModal({
           </div>
         );
 
-      case "DISPUTED":
+      case "PROPOSED":
         return (
           <div className="space-y-4">
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              This outcome has been disputed. Only authorized resolvers can
-              resolve the dispute by determining the correct outcome.
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <Label className="text-xs">Final Outcome</Label>
-                <div className="flex gap-2 mt-2">
-                  {(["YES", "NO"] as const).map((outcome) => (
-                    <Button
-                      key={outcome}
-                      variant={selectedOutcome === outcome ? "default" : "outline"}
-                      onClick={() => setSelectedOutcome(outcome)}
-                      className="flex-1"
-                      disabled={isPending || isConfirming}
-                    >
-                      {outcome}
-                    </Button>
-                  ))}
-                </div>
+            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-100">
+              <div className="font-medium">Dispute window: {formatCountdown(disputeTimeLeft)}</div>
+              <p className="mt-1 text-xs text-blue-800 dark:text-blue-300">Proposed outcome: <span className="font-semibold">{market.latestOracleEvent?.proposed}</span></p>
+            </div>
+            {isDisputeWindowOpen ? (
+              <div className="space-y-3">
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">Challenge this proposal by posting the fixed dispute bond. Anyone with a connected wallet may dispute.</p>
+                <div><Label className="text-xs">Dispute Bond</Label><div className="mt-1 flex items-center justify-between rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900"><span className="font-mono font-semibold">{formatEth(disputerBondWei, 4)}</span><span className="text-xs text-zinc-500">Fixed by oracle</span></div></div>
+                <Button onClick={handleDisputeOutcome} disabled={isPending || isConfirming || !userAddress} className="w-full">{isPending || isConfirming ? <><Loader className="mr-2 h-4 w-4 animate-spin" />Disputing...</> : "Dispute Outcome"}</Button>
               </div>
+            ) : (
+              <div className="space-y-3"><p className="text-sm text-zinc-600 dark:text-zinc-400">The dispute window has closed without a challenge. Anyone can now finalize the proposed outcome.</p><Button onClick={handleFinalizeOutcome} disabled={isPending || isConfirming || !userAddress} className="w-full">{isPending || isConfirming ? <><Loader className="mr-2 h-4 w-4 animate-spin" />Finalizing...</> : "Finalize Outcome"}</Button></div>
+            )}
+          </div>
+        );
 
-              <div>
-                <Label className="text-xs">Resolution Decision</Label>
-                <div className="flex gap-2 mt-2">
-                  <Button
-                    variant={
-                      resolveDecision === "correct" ? "default" : "outline"
-                    }
-                    onClick={() => setResolveDecision("correct")}
-                    className="flex-1"
-                    disabled={isPending || isConfirming}
-                  >
-                    Proposer Correct
-                  </Button>
-                  <Button
-                    variant={
-                      resolveDecision === "incorrect" ? "default" : "outline"
-                    }
-                    onClick={() => setResolveDecision("incorrect")}
-                    className="flex-1"
-                    disabled={isPending || isConfirming}
-                  >
-                    Disputer Correct
-                  </Button>
-                </div>
-              </div>
-
-              <Button
-                onClick={handleResolveOutcome}
-                disabled={isPending || isConfirming || !userAddress}
-                className="w-full"
-              >
-                {isPending || isConfirming ? (
-                  <>
-                    <Loader className="mr-2 h-4 w-4 animate-spin" />
-                    Resolving...
-                  </>
-                ) : (
-                  "Resolve Dispute"
-                )}
-              </Button>
+      case "DISPUTED":
+        if (isResolver !== true) {
+          return <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"><p className="font-medium text-zinc-900 dark:text-zinc-100">Resolution restricted</p><p className="mt-1 text-xs">Only whitelisted resolvers can resolve this dispute.{!userAddress ? " Connect a resolver wallet to continue." : ""}</p></div>;
+        }
+        return (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-100"><div className="font-medium">Resolution window: {formatCountdown(resolutionTimeLeft)}</div><p className="mt-1 text-xs text-red-800 dark:text-red-300">Resolution is limited to whitelisted resolvers and requires no bond.</p></div>
+            <div className={isResolutionWindowOpen ? "space-y-3" : "space-y-3 opacity-50"} aria-disabled={!isResolutionWindowOpen}>
+              <div><Label className="text-xs">Final Outcome</Label><div className="mt-2 flex gap-2">{(["YES", "NO"] as const).map((outcome) => <Button key={outcome} variant={selectedOutcome === outcome ? "default" : "outline"} onClick={() => setSelectedOutcome(outcome)} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>{outcome}</Button>)}</div></div>
+              <div><Label className="text-xs">Resolution Decision</Label><div className="mt-2 flex gap-2"><Button variant={resolveDecision === "correct" ? "default" : "outline"} onClick={() => setResolveDecision("correct")} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>Proposer Correct</Button><Button variant={resolveDecision === "incorrect" ? "default" : "outline"} onClick={() => setResolveDecision("incorrect")} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>Disputer Correct</Button></div></div>
+              <Button onClick={handleResolveOutcome} disabled={!isResolutionWindowOpen || isPending || isConfirming || !userAddress} className="w-full">{isPending || isConfirming ? <><Loader className="mr-2 h-4 w-4 animate-spin" />Resolving...</> : "Resolve Dispute"}</Button>
             </div>
           </div>
         );
 
       case "RESOLVED":
-        return (
-          <div className="space-y-3 p-4 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800">
-            <div className="flex items-start gap-3">
-              <CheckCircle className="h-5 w-5 text-emerald-600 dark:text-emerald-400 mt-0.5 flex-shrink-0" />
-              <div>
-                <h4 className="font-semibold text-sm text-emerald-900 dark:text-emerald-100">
-                  Outcome Resolved
-                </h4>
-                <p className="text-xs text-emerald-800 dark:text-emerald-300 mt-1">
-                  This market&apos;s outcome has been finalized. The outcome is:{" "}
-                  <span className="font-semibold">
-                    {market.latestOracleEvent?.finalized || "Pending"}
-                  </span>
-                </p>
-              </div>
-            </div>
-          </div>
-        );
+        return <div className="space-y-3"><div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-900 dark:border-violet-800 dark:bg-violet-900/20 dark:text-violet-100"><p className="font-medium">Ready for finalization</p><p className="mt-1 text-xs text-violet-800 dark:text-violet-300">The dispute period ended without a dispute. No bond is required.</p></div><Button onClick={handleFinalizeOutcome} disabled={isPending || isConfirming || !userAddress} className="w-full">{isPending || isConfirming ? <><Loader className="mr-2 h-4 w-4 animate-spin" />Finalizing...</> : "Finalize Outcome"}</Button></div>;
+
+      case "FINALIZED":
+        return null;
 
       default:
         return null;
@@ -491,8 +407,11 @@ export default function OracleMarketDetailModal({
                 </div>
                 <div>
                   <Label className="text-xs text-zinc-500">Creator</Label>
-                  <p className="text-sm font-medium font-mono mt-1">
-                    {formatAddress(market.creator)}
+                  <p className="text-xs font-medium font-mono mt-1">
+                    {
+                    //formatAddress(market.creator)
+                    market.creator
+                    }
                   </p>
                 </div>
                 <div>
@@ -554,54 +473,66 @@ export default function OracleMarketDetailModal({
           {market.latestOracleEvent && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Oracle Event</CardTitle>
+                <CardTitle className="text-base">Oracle Details</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <Label className="text-xs text-zinc-500">Proposer</Label>
-                    <p className="text-sm font-medium font-mono mt-1">
-                      {formatAddress(market.latestOracleEvent.proposer)}
+                    <p className="text-xs font-medium font-mono mt-1">
+                      {//formatAddress(market.latestOracleEvent.proposer)
+                        market.latestOracleEvent.proposer
+                      }
                     </p>
                   </div>
-                  {market.latestOracleEvent.disputer && (
-                    <div>
-                      <Label className="text-xs text-zinc-500">Disputer</Label>
-                      <p className="text-sm font-medium font-mono mt-1">
-                        {formatAddress(market.latestOracleEvent.disputer)}
-                      </p>
-                    </div>
-                  )}
+                  <div>
+                    <Label className="text-xs text-zinc-500">Disputer</Label>
+                    <p className="text-xs font-medium font-mono mt-1">
+                      {market.latestOracleEvent.disputer ? (market.latestOracleEvent.disputer) : "Undisputed"}
+                    </p>
+                  </div>
                   <div>
                     <Label className="text-xs text-zinc-500">
                       Proposed Outcome
                     </Label>
-                    <p className="text-sm font-medium mt-1">
+                    <p className="text-sm font-medium font-mono mt-1">
                       {market.latestOracleEvent.proposed}
                     </p>
                   </div>
-                  {market.latestOracleEvent.finalized && (
-                    <div>
-                      <Label className="text-xs text-zinc-500">
-                        Final Outcome
-                      </Label>
-                      <p className="text-sm font-medium mt-1">
-                        {market.latestOracleEvent.finalized}
-                      </p>
-                    </div>
-                  )}
+                  <div>
+                    <Label className="text-xs text-zinc-500">
+                      Disputed Outcome
+                    </Label>
+                    <p className="text-sm font-medium font-mono mt-1">
+                      {
+                        market.latestOracleEvent.disputer
+                          ? market.latestOracleEvent.proposed === "YES"
+                            ? "NO"
+                            : "YES"
+                          : "Undisputed"
+                      }
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-zinc-500">Final Outcome</Label>
+                    <p className="text-sm font-medium font-mono mt-1">
+                      {market.latestOracleEvent.finalized || "Pending"}
+                    </p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {/* Oracle Actions */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Oracle Actions</CardTitle>
-            </CardHeader>
-            <CardContent>{renderOracleActions()}</CardContent>
-          </Card>
+          {/* Finalized markets are informational only; all other states expose their valid action. */}
+          {market.oracleStatus !== "FINALIZED" && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Oracle Actions</CardTitle>
+              </CardHeader>
+              <CardContent>{renderOracleActions()}</CardContent>
+            </Card>
+          )}
 
           {/* Transaction Status */}
           {txStatus !== "idle" && (
@@ -619,7 +550,7 @@ export default function OracleMarketDetailModal({
                     <p className="text-xs text-blue-800 dark:text-blue-300 mt-1">
                       {txHash && (
                         <a
-                          href={`https://etherscan.io/tx/${txHash}`}
+                          href={`https://sepolia.etherscan.io/tx/${txHash}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="underline flex items-center gap-1"
@@ -641,7 +572,7 @@ export default function OracleMarketDetailModal({
                     <p className="text-xs text-emerald-800 dark:text-emerald-300 mt-1">
                       {txHash && (
                         <a
-                          href={`https://etherscan.io/tx/${txHash}`}
+                          href={`https://sepolia.etherscan.io/tx/${txHash}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="underline flex items-center gap-1"

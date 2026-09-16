@@ -2,9 +2,9 @@
  * @description Hook for fetching markets with oracle status
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-export type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED";
+export type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED" | "FINALIZED";
 
 export interface OracleEvent {
   id: string;
@@ -47,8 +47,7 @@ export function useOracleMarkets(
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function fetchMarkets() {
+  const refetch = useCallback(async () => {
       try {
         setIsLoading(true);
         const params = new URLSearchParams();
@@ -69,10 +68,11 @@ export function useOracleMarkets(
       } finally {
         setIsLoading(false);
       }
-    }
-
-    fetchMarkets();
   }, [oracleStatus, category, searchQuery]);
 
-  return { markets, isLoading, error };
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  return { markets, isLoading, error, refetch };
 }

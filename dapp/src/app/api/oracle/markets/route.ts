@@ -14,11 +14,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
+import { getOracleConfig } from "@/lib/oracleConfig";
 
-type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED";
+type OracleMarketStatus = "CLOSED" | "PROPOSED" | "DISPUTED" | "RESOLVED" | "FINALIZED";
 
 export async function GET(request: NextRequest) {
   try {
+    const { disputeWindowSeconds } = getOracleConfig();
     const searchParams = request.nextUrl.searchParams;
 
     const status = searchParams.get("status");
@@ -128,11 +130,12 @@ export async function GET(request: NextRequest) {
 
         if (latestEvent) {
           if (latestEvent.finalized) {
-            oracleStatus = "RESOLVED";
+            oracleStatus = "FINALIZED";
           } else if (latestEvent.disputer !== null) {
             oracleStatus = "DISPUTED";
           } else if (latestEvent.proposer) {
-            oracleStatus = "PROPOSED"
+            const proposalEndsAt = latestEvent.createdAt.getTime() + disputeWindowSeconds * 1000;
+            oracleStatus = Date.now() >= proposalEndsAt ? "RESOLVED" : "PROPOSED";
           } else {
             oracleStatus = "CLOSED";
           }
@@ -163,6 +166,7 @@ export async function GET(request: NextRequest) {
       "PROPOSED",
       "DISPUTED",
       "RESOLVED",
+      "FINALIZED",
     ];
 
     // Apply oracle status filter if provided

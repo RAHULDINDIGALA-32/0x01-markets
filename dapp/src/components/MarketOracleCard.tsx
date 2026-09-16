@@ -18,7 +18,7 @@ import {
   OracleMarket,
   OracleMarketStatus,
 } from "@/hooks/useOracleMarkets";
-import { MarketStatus } from "@prisma/client";
+//import { MarketStatus } from "@prisma/client";
 
 interface Props {
   market: OracleMarket;
@@ -30,6 +30,7 @@ const oracleMarketStatusConfig: Record<OracleMarketStatus, { label: string; vari
   PROPOSED: { label: "PROPOSED", variant: "default" },
   RESOLVED: { label: "RESOLVED", variant: "outline" },
   DISPUTED: { label: "DISPUTED", variant: "destructive" },
+  FINALIZED: { label: "FINALIZED", variant: "secondary" },
 };
 
 export default function MarketOracleCard({
@@ -60,6 +61,8 @@ export default function MarketOracleCard({
       ? "Dispute Outcome"
       : oracleStatus == "DISPUTED"
       ? "Resolve Outcome"
+      : oracleStatus === "RESOLVED"
+      ? "Finalize Outcome"
       : "View Oracle Details";
 
   return (
