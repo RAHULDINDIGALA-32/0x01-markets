@@ -24,7 +24,7 @@ import {
 import {
   calculateProbability,
   formatEth,
-  formatAddress,
+  //formatAddress,
 } from "@/lib/utils";
 import { getOracleConfig, formatSeconds } from "@/lib/oracleConfig";
 import { syncOracleToDatabase } from "@/lib/blockchainUtils";
@@ -94,8 +94,6 @@ export default function OracleMarketDetailModal({
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txStatus, setTxStatus] = useState<"idle" | "pending" | "success" | "error">("idle");
   const [txError, setTxError] = useState<string | null>(null);
-  //const [isResolving, setIsResolving] = useState(false);
-  const [resolveDecision, setResolveDecision] = useState<"correct" | "incorrect">("correct");
   const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [isResolver, setIsResolver] = useState<boolean | null>(null);
 
@@ -112,11 +110,15 @@ export default function OracleMarketDetailModal({
     : "N/A";
   const proposalTime = market.latestOracleEvent ? new Date(market.latestOracleEvent.createdAt).getTime() : null;
   const disputeEndsAt = proposalTime === null ? null : proposalTime + config.disputeWindowSeconds * 1000;
+  // The resolver deadline starts after the dispute window,
+  // not when the disputer submits their transaction (as per on-chain contract)
   const resolutionEndsAt = disputeEndsAt === null ? null : disputeEndsAt + config.resolutionDeadlineSeconds * 1000;
   const disputeTimeLeft = disputeEndsAt === null ? 0 : Math.max(0, disputeEndsAt - currentTime);
   const resolutionTimeLeft = resolutionEndsAt === null ? 0 : Math.max(0, resolutionEndsAt - currentTime);
   const isDisputeWindowOpen = disputeEndsAt !== null && disputeTimeLeft > 0;
   const isResolutionWindowOpen = resolutionEndsAt !== null && resolutionTimeLeft > 0;
+  const proposedOutcome = market.latestOracleEvent?.proposed === "NO" ? "NO" : "YES";
+  const isProposerCorrect = selectedOutcome === proposedOutcome;
   const formatCountdown = (milliseconds: number) => {
     if (milliseconds <= 0) return "Closed";
     const totalSeconds = Math.ceil(milliseconds / 1000);
@@ -242,7 +244,7 @@ export default function OracleMarketDetailModal({
         args: [
           market.contractAddress as `0x${string}`,
           selectedOutcome === "YES" ? 1 : 0,
-          resolveDecision === "correct",
+          isProposerCorrect,
         ],
       });
 
@@ -362,7 +364,7 @@ export default function OracleMarketDetailModal({
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900 dark:border-red-800 dark:bg-red-900/20 dark:text-red-100"><div className="font-medium">Resolution window: {formatCountdown(resolutionTimeLeft)}</div><p className="mt-1 text-xs text-red-800 dark:text-red-300">Resolution is limited to whitelisted resolvers and requires no bond.</p></div>
             <div className={isResolutionWindowOpen ? "space-y-3" : "space-y-3 opacity-50"} aria-disabled={!isResolutionWindowOpen}>
               <div><Label className="text-xs">Final Outcome</Label><div className="mt-2 flex gap-2">{(["YES", "NO"] as const).map((outcome) => <Button key={outcome} variant={selectedOutcome === outcome ? "default" : "outline"} onClick={() => setSelectedOutcome(outcome)} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>{outcome}</Button>)}</div></div>
-              <div><Label className="text-xs">Resolution Decision</Label><div className="mt-2 flex gap-2"><Button variant={resolveDecision === "correct" ? "default" : "outline"} onClick={() => setResolveDecision("correct")} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>Proposer Correct</Button><Button variant={resolveDecision === "incorrect" ? "default" : "outline"} onClick={() => setResolveDecision("incorrect")} className="flex-1" disabled={!isResolutionWindowOpen || isPending || isConfirming}>Disputer Correct</Button></div></div>
+              <div><Label className="text-xs">Resolution Decision</Label><div className="mt-2 flex gap-2" aria-live="polite"><Button variant={isProposerCorrect ? "default" : "outline"} className="flex-1" disabled>Proposer Correct</Button><Button variant={!isProposerCorrect ? "default" : "outline"} className="flex-1" disabled>Disputer Correct</Button></div><p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">Set automatically from the selected final outcome and the original {proposedOutcome} proposal.</p></div>
               <Button onClick={handleResolveOutcome} disabled={!isResolutionWindowOpen || isPending || isConfirming || !userAddress} className="w-full">{isPending || isConfirming ? <><Loader className="mr-2 h-4 w-4 animate-spin" />Resolving...</> : "Resolve Dispute"}</Button>
             </div>
           </div>
@@ -409,8 +411,8 @@ export default function OracleMarketDetailModal({
                   <Label className="text-xs text-zinc-500">Creator</Label>
                   <p className="text-xs font-medium font-mono mt-1">
                     {
-                    //formatAddress(market.creator)
-                    market.creator
+                      //formatAddress(market.creator)
+                      market.creator
                     }
                   </p>
                 </div>
@@ -629,7 +631,7 @@ export default function OracleMarketDetailModal({
                   </p>
                 </div>
                 <div>
-                  <Label className="text-xs text-zinc-500">Resolution Deadline</Label>
+                  <Label className="text-xs text-zinc-500">Resolution Window</Label>
                   <p className="text-sm font-semibold mt-1">
                     {formatSeconds(config.resolutionDeadlineSeconds)}
                   </p>

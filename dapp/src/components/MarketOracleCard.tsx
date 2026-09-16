@@ -53,6 +53,7 @@ export default function MarketOracleCard({
     : "N/A";
 
   const oracleStatus = market.oracleStatus
+  const disputedOutcome = market.latestOracleEvent?.proposed === "YES" ? "NO" : "YES";
 
   const actionLabel =
     oracleStatus === "CLOSED"
@@ -199,7 +200,8 @@ export default function MarketOracleCard({
 
               {/* Disputer */}
               {market.latestOracleEvent.disputer && (
-                <div className="col-span-2 border-t border-zinc-200 pt-2 dark:border-zinc-800">
+                <>
+                <div className="border-t border-zinc-200 pt-2 dark:border-zinc-800">
                   <div className="text-zinc-500 dark:text-zinc-400">
                     Disputer
                   </div>
@@ -210,6 +212,16 @@ export default function MarketOracleCard({
                     )}
                   </div>
                 </div>
+                <div className="border-t border-zinc-200 pt-2 dark:border-zinc-800">
+                  <div className="text-zinc-500 dark:text-zinc-400">
+                    Disputed outcome
+                  </div>
+
+                  <div className="mt-1 font-medium">
+                    {disputedOutcome}
+                  </div>
+                </div>
+                </>
               )}
             </div>
           )}
